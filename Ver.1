@@ -1,0 +1,118 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include "DHT.h"
+
+// WiFi credentials
+const char* ssid = "Dale_2.4G";
+const char* password = "0909724204Dale";
+
+// Web server
+WebServer server(80);
+
+// L293D pins
+const int IN1 = 18;
+const int IN2 = 19;
+const int ENA = 5; // PWM speed control
+
+// TCRT5000 pin
+const int sensorPin = 34;
+volatile int pulseCount = 0;
+
+// DHT11 sensor
+#define DHTPIN 33
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// Fan speed PWM
+int pwmValue = 255; // Start full speed
+
+// HTML page
+const char* htmlContent = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP32 Fan Control</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; }
+    h1 { color: #0F3376; padding: 2vh; }
+    p { font-size: 1.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Fan Levelling</h1>
+  <p id="temp">Temperature: 0°C</p>
+  <p id="rpm">Fan RPM: 0</p>
+  <p id="speed">Fan Speed: 0</p>
+  <script>
+    setInterval(() => {
+      fetch('/status').then(r => r.json()).then(data => {
+        document.getElementById('temp').innerText = 'Temperature: ' + data.temp + '°C';
+        document.getElementById('rpm').innerText = 'Fan RPM: ' + data.rpm;
+        document.getElementById('speed').innerText = 'Fan Speed: ' + data.speed;
+      });
+    }, 1000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// ISR for TCRT5000
+void IRAM_ATTR pulse() { pulseCount++; }
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize fan pins
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(ENA, OUTPUT);
+  digitalWrite(IN1, HIGH); // Fan forward
+  digitalWrite(IN2, LOW);
+
+  // Initialize TCRT5000 sensor
+  pinMode(sensorPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(sensorPin), pulse, FALLING);
+
+  // PWM setup: 1 kHz, 8-bit
+  ledcSetup(0, 1000, 8);
+  ledcAttachPin(ENA, 0);
+  ledcWrite(0, pwmValue); // Fan starts full speed
+
+  // Initialize DHT11
+  dht.begin();
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+
+  // Web server routes
+  server.on("/", [](){ server.send(200, "text/html", htmlContent); });
+  server.on("/status", []() {
+    static unsigned long lastMillis = 0;
+    unsigned long now = millis();
+
+    // RPM calculation
+    int count = pulseCount;
+    pulseCount = 0;
+    float rpm = (count / 2.0) * (60000.0 / max(1UL, (now - lastMillis)));
+    lastMillis = now;
+
+    // Read DHT11 temperature (display only)
+    float tempC = dht.readTemperature();
+    if (isnan(tempC)) tempC = 0;
+
+    // Send JSON to web
+    String json = "{\"temp\":" + String(tempC,1) + 
+                  ",\"rpm\":" + String(rpm,0) + 
+                  ",\"speed\":" + String(pwmValue) + "}";
+    server.send(200, "application/json", json);
+  });
+
+  server.begin();
+  Serial.println("HTTP server started.");
+}
+
+void loop() {
+  server.handleClient();
+}
