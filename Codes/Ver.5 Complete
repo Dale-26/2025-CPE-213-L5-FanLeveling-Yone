@@ -29,30 +29,91 @@ bool isAutoMode = true;    // true = automatic, false = manual
 
 // =================== HTML ===================
 const char* htmlContent = R"rawliteral(
-<!DOCTYPE HTML><html>
+<!DOCTYPE HTML>
+<html>
 <head>
-  <title>ESP32 Fan Control (PWM + RPM)</title>
+  <title>Fan Levelling</title>
   <style>
-    body { font-family: Arial, sans-serif; text-align: center; }
-    h1 { color: #0F3376; padding: 2vh; }
-    p { font-size: 1.5rem; }
-    button { font-size: 1.2rem; padding: 10px 20px; margin: 5px; }
+    /* General Styles */
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(to bottom, #e0eafc, #cfdef3);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    /* Card Container */
+    .card {
+      background: #ffffffdd;
+      padding: 40px;
+      border-radius: 20px;
+      box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+      text-align: center;
+      max-width: 400px;
+      width: 90%;
+    }
+
+    h1 {
+      color: #0F3376;
+      margin-bottom: 20px;
+    }
+
+    p {
+      font-size: 1.2rem;
+      margin: 10px 0;
+    }
+
+    /* Buttons */
+    .button-group button {
+      font-size: 1rem;
+      padding: 10px 15px;
+      margin: 5px;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.3s, transform 0.2s;
+    }
+
+    .button-group button:hover {
+      transform: translateY(-2px);
+    }
+
+    .manual-btn { background-color: #0F3376; color: white; }
+    .manual-btn:hover { background-color: #0b2455; }
+
+    .toggle-btn { background-color: #0F3376; color: white; }
+    .toggle-btn:hover { background-color: #0F3376; }
+
+    /* Mode Label */
+    #mode {
+      font-weight: bold;
+      color: #0F3376;
+    }
   </style>
 </head>
 <body>
-  <h1>Fan PWM + RPM Monitor</h1>
-  <p id="temp">Temperature: 0°C</p>
-  <p id="speed">Fan PWM: 0</p>
-  <p id="rpm">Fan RPM: 0</p>
-  <p>
-    Mode: <span id="mode">Auto</span>
-    <button onclick="toggleMode()">Toggle Auto/Manual</button>
-  </p>
-  <p>Manual Fan Speed:</p>
-  <button onclick="setSpeed(0)">0</button>
-  <button onclick="setSpeed(1)">1</button>
-  <button onclick="setSpeed(2)">2</button>
-  <button onclick="setSpeed(3)">3</button>
+  <div class="card">
+    <h1>Fan Levelling</h1>
+    <p id="temp">Temperature: 0°C</p>
+    <p id="speed">Fan PWM: 0</p>
+    <p id="rpm">Fan RPM: 0</p>
+    
+    <p>
+      Mode: <span id="mode">Auto</span>
+      <button class="toggle-btn" onclick="toggleMode()">Toggle Auto/Manual</button>
+    </p>
+
+    <p>Manual Fan Speed:</p>
+    <div class="button-group">
+      <button class="manual-btn" onclick="setSpeed(0)">0</button>
+      <button class="manual-btn" onclick="setSpeed(1)">1</button>
+      <button class="manual-btn" onclick="setSpeed(2)">2</button>
+      <button class="manual-btn" onclick="setSpeed(3)">3</button>
+    </div>
+  </div>
 
   <script>
     function setSpeed(val) {
@@ -62,12 +123,14 @@ const char* htmlContent = R"rawliteral(
       fetch('/togglemode');
     }
     setInterval(() => {
-      fetch('/status').then(r => r.json()).then(data => {
-        document.getElementById('temp').innerText = 'Temperature: ' + data.temp + '°C';
-        document.getElementById('speed').innerText = 'Fan PWM: ' + data.speed;
-        document.getElementById('rpm').innerText = 'Fan RPM: ' + data.rpm;
-        document.getElementById('mode').innerText = data.mode;
-      });
+      fetch('/status')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('temp').innerText = 'Temperature: ' + data.temp + '°C';
+          document.getElementById('speed').innerText = 'Fan PWM: ' + data.speed;
+          document.getElementById('rpm').innerText = 'Fan RPM: ' + data.rpm;
+          document.getElementById('mode').innerText = data.mode;
+        });
     }, 1000);
   </script>
 </body>
