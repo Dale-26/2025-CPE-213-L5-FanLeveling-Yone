@@ -1,0 +1,187 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include "DHT.h"
+
+// =================== WiFi ===================
+const char* ssid     = "Dale_2.4G";
+const char* password = "0909724204Dale";
+
+// Web server
+WebServer server(80);
+
+// =================== Hardware Pins ===================
+const int IN1 = 18;
+const int IN2 = 19;
+const int ENA = 5;   // PWM output
+#define DHTPIN 33
+#define DHTTYPE DHT11
+#define TACH_PIN 34   // Fan tachometer output
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// =================== Fan Control Variables ===================
+int pwmValue = 0;
+volatile unsigned long pulseCount = 0;
+unsigned long lastRPMcalc = 0;
+int rpmValue = 0;
+int manualSpeed = 0;       // 0-3 = manual preset
+bool isAutoMode = true;    // true = automatic, false = manual
+
+// =================== HTML ===================
+const char* htmlContent = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP32 Fan Control (PWM + RPM)</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; }
+    h1 { color: #0F3376; padding: 2vh; }
+    p { font-size: 1.5rem; }
+    button { font-size: 1.2rem; padding: 10px 20px; margin: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Fan PWM + RPM Monitor</h1>
+  <p id="temp">Temperature: 0°C</p>
+  <p id="speed">Fan PWM: 0</p>
+  <p id="rpm">Fan RPM: 0</p>
+  <p>
+    Mode: <span id="mode">Auto</span>
+    <button onclick="toggleMode()">Toggle Auto/Manual</button>
+  </p>
+  <p>Manual Fan Speed:</p>
+  <button onclick="setSpeed(0)">0</button>
+  <button onclick="setSpeed(1)">1</button>
+  <button onclick="setSpeed(2)">2</button>
+  <button onclick="setSpeed(3)">3</button>
+
+  <script>
+    function setSpeed(val) {
+      fetch('/setspeed?val=' + val);
+    }
+    function toggleMode() {
+      fetch('/togglemode');
+    }
+    setInterval(() => {
+      fetch('/status').then(r => r.json()).then(data => {
+        document.getElementById('temp').innerText = 'Temperature: ' + data.temp + '°C';
+        document.getElementById('speed').innerText = 'Fan PWM: ' + data.speed;
+        document.getElementById('rpm').innerText = 'Fan RPM: ' + data.rpm;
+        document.getElementById('mode').innerText = data.mode;
+      });
+    }, 1000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// =================== Tachometer ISR ===================
+void IRAM_ATTR tachISR() {
+  pulseCount++;
+}
+
+// =================== Setup ===================
+void setup() {
+  Serial.begin(115200);
+
+  // Fan driver setup
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  digitalWrite(IN1, HIGH); // Forward only
+  digitalWrite(IN2, LOW);
+
+  // PWM setup
+  ledcSetup(0, 1000, 8);   // channel 0, 1kHz, 8-bit
+  ledcAttachPin(ENA, 0);
+  ledcWrite(0, pwmValue);
+
+  // Tachometer input
+  pinMode(TACH_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(TACH_PIN), tachISR, FALLING);
+
+  // DHT11 init
+  dht.begin();
+
+  // WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+
+  // Web server routes
+  server.on("/", []() { server.send(200, "text/html", htmlContent); });
+
+  // Set manual speed
+  server.on("/setspeed", []() {
+    if (server.hasArg("val")) {
+      int val = server.arg("val").toInt();
+      if (val >= 0 && val <= 3) {
+        manualSpeed = val;
+        Serial.printf("Manual speed set to %d\n", manualSpeed);
+      }
+    }
+    server.send(200, "text/plain", "OK");
+  });
+
+  // Toggle Auto/Manual mode
+  server.on("/togglemode", []() {
+    isAutoMode = !isAutoMode;
+    Serial.printf("Mode changed. Auto mode: %s\n", isAutoMode ? "ON" : "OFF");
+    server.send(200, "text/plain", "OK");
+  });
+
+  // Status endpoint
+  server.on("/status", []() {
+    float tempC = dht.readTemperature();
+    String modeStr = isAutoMode ? "Auto" : "Manual";
+    String json = "{\"temp\":" + String(tempC,1) +
+                  ",\"speed\":" + String(pwmValue) +
+                  ",\"rpm\":" + String(rpmValue) +
+                  ",\"mode\":\"" + modeStr + "\"}";
+    server.send(200, "application/json", json);
+  });
+
+  server.begin();
+  Serial.println("HTTP server started.");
+}
+
+// =================== Loop ===================
+void loop() {
+  server.handleClient();
+  unsigned long now = millis();
+
+  // --- Temperature → PWM mapping every 2s ---
+  static unsigned long lastTempCheck = 0;
+  if (now - lastTempCheck >= 2000) {
+    lastTempCheck = now;
+    float tempC = dht.readTemperature();
+    if (!isnan(tempC)) {
+      if (isAutoMode) { // automatic mode
+        if (tempC < 25) pwmValue = 0;
+        else if (tempC >= 25 && tempC < 30) pwmValue = map(tempC * 10, 250, 300, 200, 255);
+        else pwmValue = 255;
+      } else { // manual mode
+        switch(manualSpeed) {
+          case 0: pwmValue = 0; break;
+          case 1: pwmValue = 150; break;   // low
+          case 2: pwmValue = 200; break;   // medium
+          case 3: pwmValue = 255; break;   // high
+        }
+      }
+      ledcWrite(0, pwmValue);
+      Serial.printf("Temp: %.1f °C, PWM: %d\n", tempC, pwmValue);
+    }
+  }
+
+  // --- RPM calculation every 1s ---
+  if (now - lastRPMcalc >= 1000) {
+    lastRPMcalc = now;
+    noInterrupts();
+    unsigned long count = pulseCount;
+    pulseCount = 0;
+    interrupts();
+
+    // Most PC fans give 2 pulses per revolution
+    rpmValue = (count * 60) / 2;
+    Serial.printf("Fan RPM: %d\n", rpmValue);
+  }
+}
