@@ -1,0 +1,145 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include "DHT.h"
+
+// =================== WiFi ===================
+const char* ssid     = "Dale_2.4G";
+const char* password = "0909724204Dale";
+
+// Web server
+WebServer server(80);
+
+// =================== Hardware Pins ===================
+const int IN1 = 18;
+const int IN2 = 19;
+const int ENA = 5;   // PWM output
+const int sensorPin = 34; // TCRT5000
+#define DHTPIN 33
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// =================== Fan Control Variables ===================
+volatile int pulseCount = 0;
+float currentRPM = 0;
+float targetRPM  = 0;
+int pwmValue     = 0;
+
+float Kp = 0.3; // proportional gain (tune experimentally)
+
+// =================== HTML ===================
+const char* htmlContent = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP32 Fan Control (RPM)</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; }
+    h1 { color: #0F3376; padding: 2vh; }
+    p { font-size: 1.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Fan RPM Control</h1>
+  <p id="temp">Temperature: 0°C</p>
+  <p id="rpm">Fan RPM: 0</p>
+  <p id="target">Target RPM: 0</p>
+  <p id="speed">PWM Value: 0</p>
+  <script>
+    setInterval(() => {
+      fetch('/status').then(r => r.json()).then(data => {
+        document.getElementById('temp').innerText = 'Temperature: ' + data.temp + '°C';
+        document.getElementById('rpm').innerText = 'Fan RPM: ' + data.rpm;
+        document.getElementById('target').innerText = 'Target RPM: ' + data.target;
+        document.getElementById('speed').innerText = 'PWM Value: ' + data.speed;
+      });
+    }, 1000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// =================== ISR ===================
+void IRAM_ATTR pulse() { pulseCount++; }
+
+// =================== Setup ===================
+void setup() {
+  Serial.begin(115200);
+
+  // Fan driver setup
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  digitalWrite(IN1, HIGH); // Forward only
+  digitalWrite(IN2, LOW);
+
+  // PWM setup
+  ledcSetup(0, 1000, 8);   // channel 0, 1kHz, 8-bit
+  ledcAttachPin(ENA, 0);
+  ledcWrite(0, pwmValue);
+
+  // TCRT5000 sensor
+  pinMode(sensorPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(sensorPin), pulse, FALLING);
+
+  // DHT11 init
+  dht.begin();
+
+  // WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+
+  // Web server routes
+  server.on("/", []() { server.send(200, "text/html", htmlContent); });
+  server.on("/status", []() {
+    String json = "{\"temp\":" + String(dht.readTemperature(),1) +
+                  ",\"rpm\":" + String(currentRPM,0) +
+                  ",\"target\":" + String(targetRPM,0) +
+                  ",\"speed\":" + String(pwmValue) + "}";
+    server.send(200, "application/json", json);
+  });
+  server.begin();
+  Serial.println("HTTP server started.");
+}
+
+// =================== Loop ===================
+void loop() {
+  server.handleClient();
+  unsigned long now = millis();
+
+  // --- RPM Measurement every 1s ---
+  static unsigned long lastRPMCheck = 0;
+  if (now - lastRPMCheck >= 1000) {
+    lastRPMCheck = now;
+    int count = pulseCount;
+    pulseCount = 0;
+    currentRPM = (count / 2.0) * 60.0;  // 2 pulses per rev
+    Serial.printf("Current RPM: %.1f\n", currentRPM);
+  }
+
+  // --- Temperature → Target RPM every 2s ---
+  static unsigned long lastTempCheck = 0;
+  if (now - lastTempCheck >= 2000) {
+    lastTempCheck = now;
+    float tempC = dht.readTemperature();
+    if (!isnan(tempC)) {
+      if (tempC < 25) {
+        targetRPM = 0;
+      } else if (tempC >= 25 && tempC < 30) {
+        targetRPM = map(tempC * 10, 250, 300, 1000, 2000); // linear map
+      } else {
+        targetRPM = 2000;
+      }
+      Serial.printf("Target RPM: %.1f (Temp: %.1f°C)\n", targetRPM, tempC);
+    }
+  }
+
+  // --- Proportional Control ---
+  float error = targetRPM - currentRPM;
+  pwmValue += (int)(Kp * error);
+
+  if (pwmValue > 255) pwmValue = 255;
+  if (pwmValue < 0) pwmValue = 0;
+
+  ledcWrite(0, pwmValue);
+}
