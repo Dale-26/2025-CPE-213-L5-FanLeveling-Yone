@@ -6,5 +6,5 @@
 - **block diagram**
 - **circuit diagram**
   
-Click [HERE](https://github.com/Dale-26/2025-CPE-213-L5-FanLeveling-Yone/tree/main/Picture%20of%20Hardware) to see these pictures
-#### Codes
+Click 👉🏻[HERE](https://github.com/Dale-26/2025-CPE-213-L5-FanLeveling-Yone/tree/main/Picture%20of%20Hardware) 👈🏻 to see these pictures
+#### Code Versions and Revisions
