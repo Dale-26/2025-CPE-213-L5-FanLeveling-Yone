@@ -225,7 +225,7 @@ void loop() {
       } else { // manual mode
         switch(manualSpeed) {
           case 0: pwmValue = 0; break;
-          case 1: pwmValue = 150; break;   // low
+          case 1: pwmValue = 180; break;   // low
           case 2: pwmValue = 200; break;   // medium
           case 3: pwmValue = 255; break;   // high
         }
